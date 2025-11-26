@@ -1,0 +1,11 @@
+# Requirements for optimal_memory.sh and related scripts
+numpy
+pandas
+torch
+matplotlib
+seaborn
+scikit-learn
+wandb
+pytorch_warmup
+# If you use Jupyter/IPython display in any script, uncomment:
+# ipython

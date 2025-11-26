@@ -1,0 +1,409 @@
+""" Definition of supervised learning algorithms"""
+import torch
+import torch.nn as nn
+import torchvision
+import torch
+import torch.nn as nn
+from torch.nn.functional import relu, avg_pool2d
+
+class BaseNN(nn.Module):
+    #TODO differentiate between num_classes and num_classes_epr_task
+    def __init__(self, num_classes, **kwargs):
+        super().__init__()
+        self.num_classes = num_classes
+        self.head_input_size = None
+
+    def initialize_head(self):
+        self.linear = nn.Linear(self.head_input_size, self.num_classes)
+
+    def forward_head(self, features):
+        return self.linear(features)
+    
+    def count_parameters(model):
+        return sum(p.numel() for p in model.parameters())
+    
+    def assign_weights(self, weight_vector):
+        """ Changes the network weights to match the weight_vector """
+        with torch.no_grad():
+            start_idx = 0
+            for param in self.parameters():
+                param_length = param.numel()
+                param.data = weight_vector[start_idx:start_idx + param_length].view(param.size())
+                start_idx += param_length
+
+
+class MLP(BaseNN):
+
+    def __init__(self, input_size, num_classes, width, depth, activation=nn.ReLU):
+        super().__init__(num_classes)
+        self.input_size = input_size
+        self.width = width
+        self.depth = depth
+        self.activation = activation
+        layers = []
+        # Input layer
+        if depth == 0:
+            layers.append(nn.Linear(input_size, num_classes))
+        else:
+            layers.append(nn.Linear(input_size, width))
+            layers.append(activation())
+            # Hidden layers
+            for _ in range(depth-1):
+                layers.append(nn.Linear(width, width))
+                layers.append(activation())
+            # Output layer
+            layers.append(nn.Linear(width, num_classes))
+        self.mlp = nn.Sequential(*layers)
+        self.head_input_size = input_size if depth == 0 else width
+        self.initialize_head = lambda: None  # No-op for MLP
+        print(f"Number of parameters {self.count_parameters()/1e6} MLN")
+
+    def get_features(self, x, return_intermediate=False):
+        intermediate_outputs = []
+        current = x
+        # Go through all but the last layer (which is the output layer)
+        layers = list(self.mlp.children())
+        if self.depth == 0:
+            # No hidden layers, features are input itself
+            if return_intermediate:
+                return [], x
+            return x
+        for i in range(len(layers) - 1):
+            current = layers[i](current)
+            if isinstance(layers[i], nn.Linear) and i != 0:
+                # Only append after hidden layer, not after input
+                pass
+            if isinstance(layers[i], nn.Module) and not isinstance(layers[i], nn.Linear):
+                # For activations, append output
+                if return_intermediate:
+                    intermediate_outputs.append(current)
+        # Features before output layer
+        if return_intermediate:
+            return intermediate_outputs, current
+        return current
+
+    def forward(self, x):
+        return self.mlp(x)
+
+    def forward_with_pre_activations(self, x):
+        """Run a forward pass and collect pre-activations for layers that are nn.Linear followed by activation.
+        Returns (out, pre_acts) where pre_acts is a list of tensors (B, width).
+        This expects the model to be a simple sequential-like MLP built from nn.Linear + activation modules."""
+        pre_acts = []
+        h = x
+        for layer in self.mlp.children():
+            # If layer is a linear, compute pre-activation then pass through following nonlinearity if present
+            if isinstance(layer, nn.Linear):
+                z = layer(h)
+                pre_acts.append(z.detach().cpu())  # store pre-activation (detached)
+                h = z
+            elif isinstance(layer, (nn.ReLU, nn.LeakyReLU, nn.Tanh, nn.Sigmoid, nn.ELU, nn.GELU)):
+                h = layer(h)
+            else:
+                # For other modules (e.g. Sequential or custom), try calling directly and not collecting pre-acts
+                try:
+                    h = layer(h)
+                except Exception:
+                    # fallback: ignore unknown modules
+                    pass   
+        return h, pre_acts
+
+    def forward_with_preandpost_activations(self, x):
+        """Run a forward pass and collect pre-activations and post-activtions for layers that are nn.Linear followed by activation.
+        Returns (out, pre_acts) where pre_acts is a list of tensors (B, width).
+        This expects the model to be a simple sequential-like MLP built from nn.Linear + activation modules."""
+        pre_acts = [x]
+        post_acts = []
+        h = x
+        for layer in self.mlp.children():
+            # If layer is a linear, compute pre-activation then pass through following nonlinearity if present
+            if isinstance(layer, nn.Linear):
+                post_acts.append(h) # the input to the linear layer is the output of the previous layer (or the input x)
+                z = layer(h)
+                pre_acts.append(z)  # store pre-activation (detached)
+                h = z
+            elif isinstance(layer, (nn.ReLU, nn.LeakyReLU, nn.Tanh, nn.Sigmoid, nn.ELU, nn.GELU)):
+                h = layer(h)
+            else:
+                # For other modules (e.g. Sequential or custom), try calling directly and not collecting pre-acts
+                try:
+                    h = layer(h)
+                except Exception:
+                    # fallback: ignore unknown modules
+                    pass   
+        post_acts.append(h)
+        return h, pre_acts, post_acts
+    
+    def forward_activations(self, layer_idx, x):
+        """
+        Map the input of a given layer to the final output of the network.
+        layer_idx: index of the layer in self.mlp.children() whose input is x
+        x: tensor, input to the layer
+        """
+        h = x
+        layers = self.get_layers()
+        total_linear = 0
+        for idx, layer in enumerate(layers):
+            if total_linear >= layer_idx: 
+                h = layer(h)
+            if isinstance(layer, nn.Linear):
+                total_linear += 1
+        return h
+
+    def get_layers(self):
+        return list(self.mlp.children())
+    
+    def get_linear_layers(self):
+        return [layer for layer in self.mlp.children() if isinstance(layer, nn.Linear)] 
+    
+    @staticmethod
+    def activation_pattern_from_preacts(z, activation='relu', threshold=1e-8):
+        """Convert flattened pre-activations vector to binary activation pattern vector (1 if active, 0 if inactive).
+        Returns list of tensors [B, width]."""
+        if activation.lower() in ['relu']:
+                return (z > 0).int()
+        else:
+            # generic: active when absolute pre-activation > threshold (this is a fallback)
+            return (z.abs() > threshold).int()
+         
+
+
+class CustomCNN(BaseNN):
+
+    def __init__(self, input_channels, num_classes, num_layers, base_channels=32, input_size=32):
+        super(CustomCNN, self).__init__(num_classes)
+        
+        # Initialize layers dynamically based on num_layers and base_channels
+        layers = []
+        in_channels = input_channels
+        self.input_size = input_size
+        self.layer_input_size = input_size
+        
+        for i in range(num_layers):
+            out_channels = base_channels * (2 ** i)  # Increase channels progressively
+            layers.append(self._conv_block(in_channels, out_channels))
+            in_channels = out_channels
+        
+        # Create a sequential model with convolutional layers
+        self.conv_layers = nn.Sequential(*layers)
+        print(self.conv_layers)
+        
+        # Compute the size of the input to the fully connected layer
+        # Assuming input images are square (height == width)
+        self.head_input_size = self._get_fc_input_size(input_channels)
+        self.initialize_head()
+        
+        print(f"Number of parameters {self.count_parameters()/1e6} MLN")
+
+    
+    def _conv_block(self, in_channels, out_channels):
+        """ Helper function to create a convolutional block with Conv2d, BatchNorm, ReLU, and MaxPool. """
+        
+        self.layer_input_size= (self.layer_input_size+1)//2 + 1 # pooling effect
+        block= nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=2, padding=2),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.LayerNorm([out_channels,self.layer_input_size,self.layer_input_size])
+        )
+        return block
+
+    def _get_fc_input_size(self, input_channels):
+        """ Compute the input size for the fully connected layer based on the input image size. """
+        # Assuming the input image is 32x32 (common for CIFAR-like datasets)
+        test_input = torch.zeros(1, input_channels, self.input_size, self.input_size)  # Example input tensor (batch_size, channels, height, width)
+        output = self.conv_layers(test_input)
+        return int(torch.prod(torch.tensor(output.shape[1:])))  # Flatten output size
+
+    def get_features(self, x, return_intermediate=False):
+        intermediate_outputs = []
+        
+        # Apply the convolutional layers
+        for layer in self.conv_layers:
+            x = layer(x)
+            if return_intermediate:
+                intermediate_outputs.append(x)
+        
+        # Flatten the output of conv layers before feeding it into the fully connected layer
+        x = x.view(x.size(0), -1)
+
+        if return_intermediate:
+            return intermediate_outputs, x
+        return x
+
+    def forward(self, x):
+        #Features 
+        f = self.get_features(x)
+        # Fully connected layer
+        y = self.forward_head(f)
+        return y
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes)
+            )
+
+    def forward(self, x):
+        out = relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = relu(out)
+        return out
+
+
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(self.expansion * planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes)
+            )
+
+    def forward(self, x):
+        out = relu(self.bn1(self.conv1(x)))
+        out = relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        out += self.shortcut(x)
+        out = relu(out)
+        return out
+
+
+class ResNet(BaseNN):
+    def __init__(self, block, num_blocks, num_classes=10, planes=64):
+        """
+        num_classes: output size FOR EACH HEAD (total output size = num_classes*num_heads)
+        """
+        super(ResNet, self).__init__(num_classes)
+        self.in_planes = planes
+
+        self.conv1 = nn.Conv2d(3, self.in_planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(self.in_planes)
+        self.layer1 = self._make_layer(block, planes*1, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, planes*2, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, planes*4, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, planes*8, num_blocks[3], stride=2)
+  
+        self.head_input_size = self.in_planes
+        self.initialize_head()
+        
+        print(f"Number of parameters {self.count_parameters()/1e6} MLN")
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+
+    def get_features(self, x, return_intermediate=False):
+
+        intermediate_outputs = []
+        
+        out = relu(self.bn1(self.conv1(x)))
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
+        out = self.layer1(out)
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
+        out = self.layer2(out)
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
+        out = self.layer3(out)
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
+        out = self.layer4(out)
+        if return_intermediate:
+            intermediate_outputs.append(out)
+        
+        out = avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+
+        if return_intermediate:
+            return intermediate_outputs, out
+        return out
+
+    def forward(self, x):
+        """ 
+        Returns a single value if single-head, otherwise, a list of outputs if t<0 or the output of t-th head. 
+        """
+        #Features 
+        f = self.get_features(x)
+        # Fully connected layer
+        y = self.forward_head(f)
+        return y
+
+
+def ResNet18(num_classes=10):
+    return ResNet(BasicBlock, [2, 2, 2, 2], num_classes)
+
+def ResNet34(num_classes=10):
+    return ResNet(BasicBlock, [3, 4, 6, 3], num_classes)
+
+def ResNet50(num_classes=10):
+    return ResNet(Bottleneck, [3, 4, 6, 3], num_classes)
+
+
+def get_network_from_name(net_name, **kwargs):
+
+    if net_name == "resnet18":
+        return ResNet18(num_classes=kwargs.get("num_classes_total"))
+    elif net_name == "resnet34":
+        return ResNet34(num_classes=kwargs.get("num_classes_total"))
+    elif net_name == "resnet50":
+        return ResNet50(num_classes=kwargs.get("num_classes_total"))
+    elif net_name == "CNN":
+        return CustomCNN(input_channels=kwargs.get("input_channels",3), 
+                         num_classes=kwargs.get("num_classes_total"), 
+                         num_layers=kwargs.get("net_depth",8), 
+                         base_channels=kwargs.get("base_channels",4), 
+                         input_size=kwargs.get("input_size", 224))
+    elif net_name == "MLP":
+        activation_str = kwargs.get("activation", "relu").lower()
+        activation_map = {
+            "relu": nn.ReLU,
+            "tanh": nn.Tanh,
+            "sigmoid": nn.Sigmoid,
+            "leakyrelu": nn.LeakyReLU,
+            "elu": nn.ELU,
+            "gelu": nn.GELU,
+            "selu": nn.SELU,
+            "softplus": nn.Softplus,
+        }
+        activation_fn = activation_map.get(activation_str, nn.ReLU)
+        return MLP(input_size=kwargs.get("input_size", 2), 
+                   num_classes=kwargs.get("num_classes_total"), 
+                   width=kwargs.get("width", 128), 
+                   depth=kwargs.get("depth", 2), 
+                   activation=activation_fn)
+    else:
+        raise ValueError(f"Unknown network name: {net_name}")
