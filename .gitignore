@@ -17,3 +17,4 @@ hessian_stability
 *__pycache__
 *results
 *notebooks
+*.egg-info
