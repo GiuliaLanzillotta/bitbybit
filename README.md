@@ -1,9 +1,7 @@
 # Bit by Bit 🧱 
 **A shared research library for Continual Learning experiments.**
 
-This repository contains the core utilities, network definitions, and environment wrappers shared across our research projects. 
-
-By treating this code as a standalone library, we ensure that improvements to the core infrastructure are immediately available to all dependent projects.
+This repository contains the core utilities, network definitions, and environment wrappers shared across many research projects. By treating this code as a standalone library, improvements to the core infrastructure are immediately available to all dependent projects.
 
 ## 🚀 Installation 
 
