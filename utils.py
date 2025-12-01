@@ -2,7 +2,6 @@ import wandb
 import logging
 import json
 import os
-from credentials import wandb_setup
 import pandas as pd
 
 import matplotlib.pyplot as plt
@@ -14,6 +13,7 @@ import random
 import string
 
 from bitbybit.viz_utils import *
+from bitbybit import networks
 from torch import nn
 from torch.optim import lr_scheduler
 
@@ -45,7 +45,10 @@ def loss_fn(output, target, name="MSE"):
     
     return default_losses[name](output, target)
 
-
+def setup_network(config): 
+    """ Initializing network"""
+    network = networks.get_network_from_name(config['name'], **config)
+    return network
 
 def setup_optimizer(config, network):
     """ Initializing optimizer"""
@@ -136,7 +139,7 @@ def set_flat_params(model, flat_params):
         param.data.copy_(param_data)
         offset += numel
 
-class MyArgs:
+class Dict2Args:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 

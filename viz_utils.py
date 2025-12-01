@@ -2,6 +2,11 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib
+from matplotlib.colors import SymLogNorm
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+
+# Set global aesthetics
 sns.set(style="ticks")
 plt.rcParams.update({
     "figure.dpi": 300,
@@ -25,6 +30,273 @@ plt.rcParams.update({
 })
 matplotlib.rc('text', usetex=True)
 matplotlib.rcParams['text.latex.preamble'] = r'\usepackage{amsmath}'
+
+
+def plot_projection_distribution_grid(cosine_matrix, n_cols=5, figsize=(20, 24)):
+    """
+    Plots a grid of histograms showing the distribution of projections for each step.
+    """
+    n_updates = cosine_matrix.shape[0]
+    n_rows = int(np.ceil(n_updates / n_cols))
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharex=True, sharey=True, dpi=300)
+    axes = axes.flatten()
+    
+    # Fixed bins for consistent comparison across time
+    bins = np.linspace(-1.0, 1.0, 500)
+    
+    for t in range(n_updates):
+        ax = axes[t]
+        projections = cosine_matrix[t]
+        
+        # Plot Histogram
+        ax.hist(projections, bins=bins, color='navy', alpha=0.7)
+        
+        # Metrics
+        avg_align = np.mean(projections)
+        
+        # Styling
+        # Styling
+        ax.set_title(f"Step {t+1}\nAvg Cos: {avg_align:.2f}", fontsize=10)
+        ax.grid(True, alpha=0.2)
+        ax.axvline(0, color='k', linestyle=':', alpha=0.3)
+        ax.set_xscale('symlog', linthresh=1e-2)
+        # Color background if highly aligned
+        if avg_align > 0.1:
+            ax.set_facecolor("#ffcf91") # Light blue for active steps
+
+
+
+    # Hide empty subplots
+    for t in range(n_updates, len(axes)):
+        axes[t].axis('off')
+        
+    plt.suptitle("Distribution of Update Alignment (Cosine) over Time", y=1.005, fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
+def plot_alignment_timeseries(cosine_matrix, threshold=0.3, title_prefix=""):
+    """
+    Plots the alignment of eigenvectors over time as lines.
+    Only plots eigenvectors that exceed the threshold magnitude at least once.
+    
+    Args:
+        cosine_matrix: (n_updates, n_eigenvectors)
+        threshold: Minimum absolute cosine value to trigger plotting.
+    """
+    n_updates, n_evecs = cosine_matrix.shape
+    time_steps = np.arange(n_updates)
+    
+    # 1. Identify "Active" Eigenvectors
+    # Find max absolute alignment for each eigenvector over time
+    max_alignments = np.max(np.abs(cosine_matrix), axis=0)
+    active_indices = np.where(max_alignments >= threshold)[0]
+    
+    print(f"Found {len(active_indices)} eigenvectors crossing threshold {threshold}")
+    
+    if len(active_indices) == 0:
+        print("No eigenvectors met the threshold. Try lowering it.")
+        return
+
+    # 2. Setup Plot
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
+    
+    # Setup Colormap: Map eigenvector index to a color
+    # Low Index (Sharp Curvature) = Red/Warm
+    # High Index (Flat Bulk) = Blue/Cool
+    cmap = cm.get_cmap('Spectral_r') # Red=0, Blue=End
+    norm = mcolors.Normalize(vmin=0, vmax=n_evecs)
+    
+    # 3. Plot Lines
+    for idx in active_indices:
+        series = cosine_matrix[:, idx]
+        
+        # Color based on Rank (Index)
+        color = cmap(norm(idx))
+        
+        # Line style: Top-5 get solid thick lines, others get thinner/transparent
+        if idx < 5 or idx > n_evecs - 5:
+            ax.plot(time_steps, series, color=color, linewidth=1.5, label=f"Idx {idx}", alpha=0.9, zorder=10)
+        else:
+            ax.plot(time_steps, series, color=color, linewidth=1.0, alpha=0.6, zorder=5)
+            
+    # 4. Styling
+    ax.axhline(0, color='black', linestyle='-', linewidth=1, alpha=0.3)
+    ax.axhline(threshold, color='gray', linestyle='--', linewidth=1, alpha=0.5)
+    ax.axhline(-threshold, color='gray', linestyle='--', linewidth=1, alpha=0.5)
+    
+    ax.set_xlabel("Update Step")
+    ax.set_ylabel("Cosine Projection")
+    ax.set_title(f"{title_prefix} Alignment Dynamics (Threshold $>$ {threshold})")
+    ax.set_ylim(-1.1, 1.1)
+    
+    # 5. Colorbar to explain the Index
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax)
+    cbar.set_label('Eigenvector Index \n(Red=Unstable, Blue=Stably Flat)')
+    
+    # Legend only for the top few to avoid clutter
+    # (We rely on color for the rest)
+    handles, labels = ax.get_legend_handles_labels()
+    # Filter legend to only show top 5 if they exist in the plot
+    if len(handles) > 0:
+        ax.legend(loc='upper right', framealpha=0.9)
+        
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+def plot_alignment_heatmap(cosine_matrix, evals=None, linthresh=0.01):
+    """
+    Plots a Heatmap of alignment over time.
+    X-Axis: Time (Update Step)
+    Y-Axis: Eigenvector Index
+    """
+    fig, ax = plt.subplots(figsize=(10, 8), dpi=300)
+    
+    # Transpose so Time is X-axis (Standard for timelines)
+    # Matrix shape: (n_eigenvectors, n_updates)
+    data_to_plot = cosine_matrix.T
+    norm = SymLogNorm(linthresh=linthresh, linscale=1, vmin=-1.0, vmax=1.0, base=10)
+    
+    sns.heatmap(
+        data_to_plot, 
+        cmap="RdBu_r", 
+        norm=norm, 
+        cbar_kws={'label': 'Cosine Similarity (SymLog Scale)', 'ticks': [-1, -0.1, -0.01, 0, 0.01, 0.1, 1]},
+        ax=ax
+    )
+    
+    ax.set_xlabel("Update Step (Time)")
+    ax.set_ylabel("Eigenvector Index" if evals is not None else "Eigenvector Index (Stable to Unstable)")
+    ax.set_title("Spectral Dynamics: Update Alignment Heatmap")
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_singular_values(pca_normalized_singular_values):
+    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+    n_components = len(pca_normalized_singular_values)
+    # Plot normalized singular values
+    axes[0].bar(range(1, n_components + 1), pca_normalized_singular_values * 100, alpha=0.7, color='blue')
+    axes[0].set_xlabel('Principal Component', fontsize=12)
+    axes[0].set_ylabel(r'Normalized Singular Value (\%)', fontsize=12)
+    axes[0].set_title('Normalized Singular Values by Principal Component', fontsize=14, fontweight='bold')
+    axes[0].set_yscale('log')
+    axes[0].grid(True, alpha=0.3, axis='y')
+
+    # Plot cumulative normalized singular values
+    cumsum = np.cumsum(pca_normalized_singular_values) * 100
+    axes[1].plot(range(1, n_components + 1), cumsum, marker='o', linewidth=2, color='darkorange')
+    axes[1].axhline(y=90, color='r', linestyle='--', alpha=0.5, label='90%')
+    axes[1].axhline(y=95, color='g', linestyle='--', alpha=0.5, label='95%')
+    axes[1].axhline(y=99, color='b', linestyle='--', alpha=0.5, label='99%')
+    axes[1].set_xlabel('Number of Components', fontsize=12)
+    axes[1].set_ylabel(r'Cumulative Normalized Singular Value (\%)', fontsize=12)
+    axes[1].set_title('Cumulative Normalized Singular Values', fontsize=14, fontweight='bold')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_trajectory_2d(trajectory_pca, pca_values):
+    plt.figure(figsize=(6, 5))
+
+    # Create color gradient based on time
+    time_steps = np.arange(len(trajectory_pca))
+    scatter = plt.scatter(
+        trajectory_pca[:, 0], 
+        trajectory_pca[:, 1],
+        c=time_steps,
+        cmap='viridis',
+        s=1,
+        alpha=0.6
+    )
+
+    # Plot the trajectory path
+    plt.plot(
+        trajectory_pca[:, 0], 
+        trajectory_pca[:, 1],
+        'k-',
+        alpha=0.3,
+        linewidth=1
+    )
+
+    # Mark start and end points
+    plt.scatter(trajectory_pca[0, 0], trajectory_pca[0, 1], 
+            c='red', s=50, marker='o', label='Start', edgecolors='black', linewidths=2)
+    plt.scatter(trajectory_pca[-1, 0], trajectory_pca[-1, 1], 
+            c='blue', s=50, marker='*', label='End', edgecolors='black', linewidths=2)
+
+    plt.xlabel(fr'PC1 ({pca_values[0]*100:.2f}\%)', fontsize=12)
+    plt.ylabel(fr'PC2 ({pca_values[1]*100:.2f}\%)', fontsize=12)
+    plt.title('Training Trajectory in 2D PCA Space', fontsize=14, fontweight='bold')
+    plt.colorbar(scatter, label='Training Step')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+def plot_hessian_spectrum(evals, title_prefix=""):
+    """
+    Visualizes the Hessian Spectrum.
+    
+    Args:
+        evals: 1D numpy array of eigenvalues (can be unsorted).
+        title_prefix: String to add to titles (e.g., "Task 1 Start").
+    """
+    # 1. Sort Descending (Largest Positive to Largest Negative)
+    sorted_evals = np.sort(evals)[::-1]
+    n_params = len(sorted_evals)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(8, 5))
+    
+    # --- Plot 1: The Scree Plot (Rank vs Eigenvalue) ---
+    # Matches your PCA Bar plot style, but handles negative values
+    indices = range(1, n_params + 1)
+    
+    # We use a line + fill because with 1000+ params, bars get messy
+    axes[0].plot(indices, sorted_evals, color='navy', linewidth=1.5)
+    axes[0].fill_between(indices, sorted_evals, color='navy', alpha=0.1)
+    
+    # Color the negative section differently if it exists
+    if np.any(sorted_evals < 0):
+        axes[0].fill_between(indices, sorted_evals, 0, where=(sorted_evals < 0), 
+                             color='red', alpha=0.1, interpolate=True)
+        axes[0].axhline(0, color='black', linestyle='-', linewidth=0.8, alpha=0.5)
+
+    axes[0].set_xlabel('Eigenvalue Rank (Index)', fontsize=12)
+    axes[0].set_ylabel(r'Eigenvalue $\lambda$', fontsize=12)
+    axes[0].set_title(f'{title_prefix} Hessian Spectrum (Sorted)', fontsize=14, fontweight='bold')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_yscale('symlog', linthresh=1e-5)
+    
+    # Add annotation for the Max Eigenvalue (Sharpness)
+    max_eig = sorted_evals[0]
+    axes[0].scatter([1], [max_eig], color='red', zorder=5, s=20)
+    axes[0].text(n_params*0.05, max_eig, f" $\lambda_{{max}}={max_eig:.2f}$", color='red', fontweight='bold')
+
+    # --- Plot 2: Spectral Density (Histogram) ---
+    # This replaces the Cumulative plot. It shows the "Bulk" vs "Outliers".
+    counts, bins, _ = axes[1].hist(sorted_evals, bins=1000, color='teal', alpha=0.7, log=True)
+    
+    axes[1].set_xlabel(r'Eigenvalue $\lambda$', fontsize=12)
+    axes[1].set_ylabel('Count (Log Scale)', fontsize=12)
+    axes[1].set_title(f'{title_prefix} Eigenvalue Density', fontsize=14, fontweight='bold')
+    axes[1].grid(True, alpha=0.3, which='both')
+    # axes[1].set_yscale('symlog', linthresh=1e-5)
+    axes[1].set_xscale('symlog', linthresh=1e-1)
+    
+    # Mark the median (center of the bulk)
+    median_eval = np.median(sorted_evals)
+    axes[1].axvline(median_eval, color='k', linestyle='--', alpha=0.5, label=f'Median: {median_eval:.4f}')
+    axes[1].legend()
+
+    plt.tight_layout()
+    plt.show()
 
 def plot_longitudinal_mean_history(results, config, metric_to_plot, num_tasks, model_name=""):
     """
@@ -358,19 +630,28 @@ def plot_2d_data(X,y, title):
     plt.show()
 
 
-def viz_heatmap(matrix, title, xaxis, yaxis, savepath):
-    increase_factor = len(matrix) // 10
-    # Set annotation font size and color
-    annot_kws = {"size": 5}
+def plot_heatmap(matrix, title, cmap='inferno'):
+    plt.figure(figsize=(8, 6))
+    im = plt.imshow(matrix, cmap=cmap, interpolation='nearest')
+    plt.colorbar(im, label='Value')  # Add a color scale bar
+    plt.title(title)
+    plt.grid(False)
+    plt.tight_layout()
+    plt.show()
 
-    # Plot the heatmap
-    fig, ax = plt.subplots(figsize=(5*increase_factor, 4*increase_factor), dpi=200)
-    sns.heatmap(matrix, annot=True, fmt=".2f", cmap='plasma', linewidths=.5, annot_kws=annot_kws, ax=ax)
-    ax.set_title(title)
-    ax.set_xlabel(xaxis)
-    ax.set_ylabel(yaxis)
-    fig.savefig(savepath, dpi=200, bbox_inches='tight')
-    plt.close()
+# def viz_heatmap(matrix, title, xaxis, yaxis, savepath):
+#     increase_factor = len(matrix) // 10
+#     # Set annotation font size and color
+#     annot_kws = {"size": 5}
+
+#     # Plot the heatmap
+#     fig, ax = plt.subplots(figsize=(5*increase_factor, 4*increase_factor), dpi=200)
+#     sns.heatmap(matrix, annot=True, fmt=".2f", cmap='plasma', linewidths=.5, annot_kws=annot_kws, ax=ax)
+#     ax.set_title(title)
+#     ax.set_xlabel(xaxis)
+#     ax.set_ylabel(yaxis)
+#     fig.savefig(savepath, dpi=200, bbox_inches='tight')
+#     plt.close()
 
 def viz_lineplots(matrix, title, xaxis, yaxis, savepath, lbl_names=None, ylim=None):
     increase_factor = len(matrix) // 10

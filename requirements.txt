@@ -1,11 +1,13 @@
-# Requirements for optimal_memory.sh and related scripts
-numpy
-pandas
-torch
-matplotlib
-seaborn
-scikit-learn
-wandb
-pytorch_warmup
-# If you use Jupyter/IPython display in any script, uncomment:
-# ipython
+avalanche_lib==0.6.0
+bitbybit.egg==info
+fvcore==0.1.5.post20221221
+matplotlib==3.10.7
+numpy==2.3.5
+pandas==2.3.3
+Pillow==12.0.0
+python-dotenv==1.2.1
+pytorch_warmup==0.2.0
+seaborn==0.13.2
+torch==2.6.0
+torchvision==0.21.0
+wandb==0.23.0

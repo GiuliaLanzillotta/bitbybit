@@ -61,12 +61,34 @@ class World:
         Contains an environment object which is a dict of tasks, task name -> task dataset  
     """
 
+    normalization = {
+        "cifar10": transforms.Normalize(
+        mean=[0.5070751592371323, 0.48654887331495095, 0.4409178433670343], 
+        std=[0.2673342858792401, 0.2564384629170883, 0.27615047132568404]
+        ),
+        "cifar100": transforms.Normalize(
+        mean=[0.5070751592371323, 0.48654887331495095, 0.4409178433670343], 
+        std=[0.2673342858792401, 0.2564384629170883, 0.27615047132568404]
+        ),
+        "mnist": transforms.Normalize(
+        mean=[0.1307], 
+        std=[0.3081]
+        ),
+        "clear100": transforms.Normalize(
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+        ),
+        "MD5": transforms.Normalize(
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]        
+        )
+    }
+
     def __init__(self) -> None:
         self.environment = {}
         self.task_names = {}
         self.ordered_task_names = self.task_names
         self.world_name = ""
         self.buffer_indices = {} #only used when doing replay
+        self.dataset_name = ""
         
     def init_multi_task(self, number_of_tasks=-1, train=True):
         """ Concatenates the first 'number_of_tasks' tasks into a single task by concatenating the datasets."""
@@ -126,6 +148,32 @@ class World:
             If no ordering is given it provides a random ordering."""
         if ordering is None: ordering = np.random.permutation(range(len(self.task_names)))
         self.ordered_task_names = [self.task_names[i] for i in ordering]
+
+    def define_transforms(self):
+        """ Defines default transforms (depending on the dataset chosen)."""
+
+        self.train_transform = transforms.Compose(
+        [
+            transforms.Resize(self.data_size),
+            transforms.RandomCrop(self.data_size),
+            transforms.ToTensor(),
+            self.normalization[self.dataset_name],
+        ]
+         )
+        self.test_transform = transforms.Compose(
+        [
+            transforms.Resize(self.data_size),
+            transforms.CenterCrop(self.data_size),
+            transforms.ToTensor(),
+            self.normalization[self.dataset_name],
+        ]
+        )
+
+        self.augmentations = [
+            transforms.RandomCrop(self.data_size, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(15)
+        ]
 
     def sample_batch_joint(self, batch_size, train=True):
         joint_data = self.init_multi_task(number_of_tasks=-1, train=train) 
@@ -261,54 +309,35 @@ class PermutationWorld(World):
         Returns an environment object which is a dict of tasks, task name -> task dataset 
     """
 
-    data_size = 32
-    num_classes = 10
     batches_eval = 5
     criterion = nn.CrossEntropyLoss()
     
-    normalize = transforms.Normalize(
-        mean=[0.5070751592371323, 0.48654887331495095, 0.4409178433670343], 
-        std=[0.2673342858792401, 0.2564384629170883, 0.27615047132568404]
-    )
-    train_transform = transforms.Compose(
-        [
-            transforms.Resize(data_size),
-            transforms.RandomCrop(data_size),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
-    test_transform = transforms.Compose(
-        [
-            transforms.Resize(data_size),
-            transforms.CenterCrop(data_size),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
-
-    augmentations = [
-                    transforms.RandomCrop(data_size, padding=4),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.RandomRotation(15)
-                ]
 
 
     def __init__(self, 
                  permutation_size,
                  number_tasks=10, 
                  train_transform=None, 
-                 test_transform=None, augment=False) -> None:
+                 test_transform=None, 
+                 augment=False,
+                 dataset_to_permute="cifar10", 
+                 data_size=32,
+                 num_classes=10,
+                 **kwargs) -> None:
         
         super(PermutationWorld, self).__init__()
         
+        self.data_size = data_size
+        self.num_classes = num_classes
         self.number_tasks = number_tasks
         self.permutation_size = permutation_size
         self.permutation_fraction = (self.permutation_size**2)/(self.data_size**2)
-        self.world_name = f"permuted-cifar10-{permutation_size}"
+        self.world_name = f"permuted-{dataset_to_permute}-{permutation_size}"
         self.num_classes_per_task = self.num_classes
-
-
+        self.dataset_name = dataset_to_permute
+        self.root = kwargs.get("root", "../datasets")
+        
+        self.define_transforms()
         if train_transform is not None: self.train_transform = train_transform
         if test_transform is not None: self.test_transform = test_transform
 
@@ -321,6 +350,9 @@ class PermutationWorld(World):
         self.task_names = list(environment['train'].keys())
         self.ordered_task_names = self.task_names
     
+    
+
+
     def generate_tasks(self):
         """ Generates a sequence of N tasks by applying a fixed random permutation to each."""
         # dictionary with a train and test stream 
@@ -336,10 +368,15 @@ class PermutationWorld(World):
 
             permutation_transform = Permutation(self.data_size, self.permutation_size)
 
-            C100_dataset_train = CIFAR10(root="../datasets", train=True, 
-                                        download=True, transform=transforms.Compose([self.train_transform, permutation_transform]))
-            C100_dataset_test = CIFAR10(root="../datasets", train=False, download=True, 
-                                         transform=transforms.Compose([self.test_transform, permutation_transform]))
+            if self.dataset_name=="cifar10":
+                C100_dataset_train = CIFAR10(root=self.root, train=True, download=True, transform=transforms.Compose([self.train_transform, permutation_transform]))
+                C100_dataset_test = CIFAR10(root=self.root, train=False, download=True, transform=transforms.Compose([self.test_transform, permutation_transform]))
+
+            elif self.dataset_name=="mnist":
+                C100_dataset_train = MNIST(root=self.root, train=True, download=True, transform=transforms.Compose([self.train_transform, permutation_transform]))
+                C100_dataset_test = MNIST(root=self.root,train=False, download=True, transform=transforms.Compose([self.test_transform, permutation_transform]))
+
+            else: raise NotImplementedError(f"Dataset {self.dataset_name} is not available for permutation.")
             
             stream_definitions['train'][label] = TaskDataset(C100_dataset_train, task_id=i)   
             stream_definitions['test'][label] = TaskDataset(C100_dataset_test, task_id=i)
@@ -406,36 +443,9 @@ class SplitWorld(World):
 
         Returns an environment object which is a dict of tasks, task name -> task dataset 
     """
-    data_size = 32
     batches_eval = 5
     criterion = nn.CrossEntropyLoss()
     
-    normalize = transforms.Normalize(
-        mean=[0.5070751592371323, 0.48654887331495095, 0.4409178433670343], 
-        std=[0.2673342858792401, 0.2564384629170883, 0.27615047132568404]
-    )
-    train_transform = transforms.Compose(
-        [
-            transforms.Resize(data_size),
-            transforms.RandomCrop(data_size),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
-    test_transform = transforms.Compose(
-        [
-            transforms.Resize(data_size),
-            transforms.CenterCrop(data_size),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
-    augmentations = [
-                    transforms.RandomCrop(data_size, padding=4),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.RandomRotation(15)
-                ]
-
 
     def __init__(self, 
                  split_type, # either 'classes' or 'chunks' 
@@ -462,23 +472,23 @@ class SplitWorld(World):
         self.world_name = f"split-{dataset_to_split}-{split_type}-{number_tasks}"
         self.randomize_class_order = randomize_class_order
         if self.number_tasks > 10: self.batches_eval = 1
+        self.dataset_name = dataset_to_split
+        self.root = kwargs.get("root", "../datasets")
+        self.data_size = data_size
 
-
+        self.define_transforms()
         if train_transform is not None: self.train_transform = train_transform
         if test_transform is not None: self.test_transform = test_transform
         if augment: 
             self.train_transform = transforms.Compose([self.augmentations, self.train_transform])
 
-        self.dataset_to_split = dataset_to_split
-        self.root = kwargs.get("root", "../datasets")
-        self.data_size = data_size
 
         environment = self.generate_tasks()
         self.environment = environment
         self.task_names = list(environment['train'].keys())
         self.ordered_task_names = self.task_names
 
-    
+
     def generate_tasks(self):
         """ Generates a sequence of N tasks by applying a fixed random permutation to each."""
         # dictionary with a train and test stream 
@@ -487,16 +497,19 @@ class SplitWorld(World):
         stream_definitions['test'] = {}
         task_labels = []
 
-        if self.dataset_to_split=="cifar100":
-            dataset_train = CIFAR100(root="../datasets", train=True, 
-                                        download=True, transform=self.train_transform)
-            dataset_test = CIFAR100(root="../datasets", train=False, download=True, 
-                                            transform=self.test_transform)
-        elif self.dataset_to_split=="mnist":
-            dataset_train = MNIST(root="../datasets", train=True, download=True, transform=self.train_transform)
-            dataset_test = MNIST(root="../datasets", train=False, download=True, transform=self.test_transform)
+        if self.dataset_name=="cifar100":
+            dataset_train = CIFAR100(root=self.root, train=True, download=True, transform=self.train_transform)
+            dataset_test = CIFAR100(root=self.root, train=False, download=True, transform=self.test_transform)
 
-        else: raise NotImplementedError(f"Dataset {self.dataset_to_split} is unknown.")
+        elif self.dataset_name=="cifar10":
+            dataset_train = CIFAR10(root=self.root, train=True, download=True, transform=self.train_transform)
+            dataset_test = CIFAR10(root=self.root, train=False, download=True, transform=self.test_transform)
+
+        elif self.dataset_name=="mnist":
+            dataset_train = MNIST(root=self.root, train=True, download=True, transform=self.train_transform)
+            dataset_test = MNIST(root=self.root, train=False, download=True, transform=self.test_transform)
+
+        else: raise NotImplementedError(f"Dataset {self.dataset_name} is unknown.")
 
         chunks_train = Split(self.split_type, dataset_train, self.number_tasks, self.randomize_class_order)
         chunks_test = Split(self.split_type, dataset_test, self.number_tasks, self.randomize_class_order)
@@ -532,28 +545,6 @@ class Shuffle(object):
             return self.new_label_mapping[index]
         return target
 
-class IndexedCifar10(CIFAR10):
-    def __getitem__(self, index):
-        """
-        Args:
-            index (int): Index
-
-        Returns:
-            tuple: (image, target) where target is index of the target class.
-        """
-        img, target = self.data[index], self.targets[index]
-
-        # doing this so that it is consistent with all other datasets
-        # to return a PIL Image
-        img = Image.fromarray(img)
-
-        if self.transform is not None:
-            img = self.transform(img)
-
-        if self.target_transform is not None:
-            target = self.target_transform(target, index)
-
-        return img, target
 
 class LabelShufflingWorld(World):
     """ Environment for Supervised Learning tasks with controlled label shuffling. 
@@ -568,52 +559,33 @@ class LabelShufflingWorld(World):
     batches_eval = 5
     criterion = nn.CrossEntropyLoss()
     
-    normalize = transforms.Normalize(
-        mean=[0.5070751592371323, 0.48654887331495095, 0.4409178433670343], 
-        std=[0.2673342858792401, 0.2564384629170883, 0.27615047132568404]
-    )
-    train_transform = transforms.Compose(
-        [
-            transforms.Resize(data_size),
-            transforms.RandomCrop(data_size),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
-    test_transform = transforms.Compose(
-        [
-            transforms.Resize(data_size),
-            transforms.CenterCrop(data_size),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
-
-    augmentations = [
-                    transforms.RandomCrop(data_size, padding=4),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.RandomRotation(15)
-                ]
-
-
     def __init__(self, 
                  shuffle_fraction,
                  number_tasks=10, 
                  train_transform=None, 
-                 test_transform=None, augment=False) -> None:
+                 test_transform=None, 
+                 augment=False,
+                 num_classes=100,
+                 dataset_to_shuffle="cifar100",
+                 data_size=32,
+                 **kwargs) -> None:
         
         super(LabelShufflingWorld, self).__init__()
         
+        self.data_size = data_size
+        self.num_classes = num_classes
         self.number_tasks = number_tasks
         self.shuffle_fraction = shuffle_fraction
-        self.world_name = f"shuffled-cifar10-{shuffle_fraction}"
+        self.dataset_name = dataset_to_shuffle
+        self.world_name = f"shuffled-{dataset_to_shuffle}-{shuffle_fraction}"
+        # Note: you can only use this class with datasets that have an internal indexing of samples, or it must be implemented
         self.num_classes_per_task = self.num_classes
+        self.root = kwargs.get("root", "../datasets")
 
 
+        self.define_transforms()
         if train_transform is not None: self.train_transform = train_transform
         if test_transform is not None: self.test_transform = test_transform
-
-
         if augment: 
             self.train_transform = transforms.Compose([self.augmentations, self.train_transform])
 
@@ -630,7 +602,17 @@ class LabelShufflingWorld(World):
         stream_definitions['test'] = {}
         task_labels = []
 
-        original_dataset = CIFAR10(root="../datasets", train=True, download=True)
+        if self.dataset_name=="cifar10":
+            original_dataset = CIFAR10(root=self.root, train=True, download=True)
+            def get_train_dataset(t): return CIFAR10(root=self.root, train=True, download=True, transform=self.train_transform, target_transform=t)
+            def get_test_dataset(): return CIFAR10(root=self.root, train=False, download=True, transform=self.test_transform)
+            
+        elif self.dataset_name=="mnist":
+            original_dataset = MNIST(root=self.root, train=True, download=True)
+            def get_train_dataset(t): return MNIST(root=self.root, train=True, download=True, transform=self.train_transform, target_transform=t)
+            def get_test_dataset(): return MNIST(root=self.root, train=False, download=True, transform=self.test_transform)
+            
+        else: raise NotImplementedError(f"Dataset {self.dataset_name} is unknown.")
     
         for i in range(self.number_tasks):
             
@@ -646,79 +628,8 @@ class LabelShufflingWorld(World):
                 shuffle_transform = Shuffle(num_samples=len(original_dataset), num_classes=10, shuffle_fraction=self.shuffle_fraction, original_labels=original_dataset.targets, shuffled_indices=shuffled_indices)
         
 
-            C10_dataset_train = IndexedCifar10(root="../datasets", train=True, download=True, transform=self.train_transform, target_transform=shuffle_transform)
-            C10_dataset_test = CIFAR10(root="../datasets", train=False, download=True, transform=self.test_transform)
-
-            stream_definitions['train'][label] = TaskDataset(C10_dataset_train,i)
-            stream_definitions['test'][label] = TaskDataset(C10_dataset_test, i) 
-
-        return stream_definitions
-
-class MixedPermutationWorld(PermutationWorld):
-    """ Environment for Supervised Learning tasks with controlled mixed permutations. 
-        Extends the Permutation world environment to the case wehre half of the tasks 
-            have low permutation and half of the tasks high.  
-
-
-        Returns an environment object which is a dict of tasks, task name -> task dataset 
-    """
-
-    @staticmethod
-    def get_split_indices(length, num_splits):
-        return [round(i * length / num_splits) for i in range(1, num_splits)]
-
-    def __init__(self, 
-                 number_tasks=10, 
-                 train_transform=None, 
-                 test_transform=None, augment=False, num_switches=1) -> None:
-        
-        super(PermutationWorld, self).__init__()
-        
-        self.number_tasks = number_tasks
-        self.world_name = f"permuted-cifar10-mixed-{num_switches}"
-        self.num_switches = num_switches+1
-
-        if train_transform is not None: self.train_transform = train_transform
-        if test_transform is not None: self.test_transform = test_transform
-
-        if augment: 
-            self.train_transform = transforms.Compose([self.augmentations, self.train_transform])
-
-        self.switch_task_indices = self.get_split_indices(self.number_tasks, self.num_switches)
-        
-        environment = self.generate_tasks()
-        self.environment = environment
-        self.task_names = list(environment['train'].keys())
-        self.ordered_task_names = self.task_names
-    
-
-    def generate_tasks(self):
-        """ Generates a sequence of N tasks by applying a fixed random permutation to each."""
-        # dictionary with a train and test stream 
-        stream_definitions = dict()
-        stream_definitions['train'] = {}
-        stream_definitions['test'] = {}
-        task_labels = []
-
-        permutation_size=16 
-        for i in range(self.number_tasks):
-            
-            if i in self.switch_task_indices: 
-                if permutation_size==32: permutation_size=16
-                else: permutation_size=32
-
-            label = f"permutation_{permutation_size}_{i}"
-            task_labels.append(label)
-
-            permutation_transform = Permutation(self.data_size, permutation_size)
-
-            C100_dataset_train = CIFAR10(root="../datasets", train=True, 
-                                        download=True, transform=transforms.Compose([self.train_transform, permutation_transform]))
-            C100_dataset_test = CIFAR10(root="../datasets", train=False, download=True, 
-                                         transform=transforms.Compose([self.test_transform, permutation_transform]))
-
-            stream_definitions['train'][label] = TaskDataset(C100_dataset_train, i)
-            stream_definitions['test'][label] = TaskDataset(C100_dataset_test, i)
+            stream_definitions['train'][label] = TaskDataset(get_train_dataset(shuffle_transform),i)
+            stream_definitions['test'][label] = TaskDataset(get_test_dataset(), i) 
 
         return stream_definitions
 
@@ -731,52 +642,28 @@ class MultiDatasetsWorld(World):
     """
 
     data_size = 224
-    root = '../datasets'
     number_tasks = 5
     batches_eval = 1
     criterion = nn.CrossEntropyLoss()
 
-    normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406], 
-        std=[0.229, 0.224, 0.225]
-    )
-    train_transform = transforms.Compose(
-        [
-            transforms.Resize(data_size),
-            transforms.CenterCrop(data_size),
-            transforms.ToTensor(),
-            normalize
-        ]
-    )
-    test_transform = transforms.Compose(
-        [
-            transforms.Resize(data_size),
-            transforms.CenterCrop(data_size),
-            transforms.ToTensor(),
-            normalize
-        ]
-    )
-
-    augmentations = [
-                    transforms.RandomCrop(data_size, padding=4),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.RandomRotation(15)
-                ]
-
-
+    
     def __init__(self, 
                  num_classes = 50,
                  train_transform=None, 
                  test_transform=None, 
-                 augment=False) -> None:
+                 augment=False,
+                 **kwargs) -> None:
         
         super(MultiDatasetsWorld, self).__init__()
         
         self.num_classes = num_classes
         self.world_name = "multi-datasets"
+        self.dataset_name = "MD5"
         self.augment = augment
         self.num_classes_per_task = self.num_classes
+        self.root = kwargs.get("root", "../datasets")
 
+        self.define_transforms()
         if train_transform is not None: self.train_transform = train_transform
         if test_transform is not None: self.test_transform = test_transform
 
@@ -816,7 +703,7 @@ class MultiDatasetsWorld(World):
 
     def load_food(self):
         """Loads Food101 dataset"""
-        root = '/local/home/stuff/food101/'
+        root = self.root
 
         train_dataset = Food101(root=root, download=True, transform=self.train_transform)
         val_dataset = Food101(root=root, split='test', download=True, transform=self.test_transform)
@@ -858,7 +745,7 @@ class MultiDatasetsWorld(World):
         """Loads StanfordCars dataset
         https://pytorch.org/vision/main/generated/torchvision.datasets.StanfordCars.html#torchvision.datasets.StanfordCars
         """
-        root = '../ded/data/'
+        root = self.root
 
         train_dataset = StanfordCars(root=root, download=True, transform=self.train_transform)
         val_dataset = StanfordCars(root=root, split='test', download=True, transform=self.test_transform)
@@ -894,54 +781,41 @@ class ClearWorld(World):
 
     """
 
-
-    normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-    )
-    train_transform = transforms.Compose(
-        [
-            transforms.Resize(224),
-            transforms.RandomCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
-    test_transform = transforms.Compose(
-        [
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ]
-    )
+    data_size = 224
+    
     batches_eval = 5
     num_classes = 100
     criterion = nn.CrossEntropyLoss()
 
 
-    def __init__(self, train_transform=None, test_transform=None) -> None:
+    def __init__(self, 
+                 train_transform=None, 
+                 test_transform=None, 
+                 **kwargs) -> None:
 
         super(ClearWorld, self).__init__()
         self.world_name = "clear-buckets"
         self.num_classes_per_task = self.num_classes
+        self.root = kwargs.get("root", "../datasets/clear100")
+        self.dataset_name = "clear100"
 
-
+        self.define_transforms()
         if train_transform is not None: self.train_transform = train_transform
         if test_transform is not None: self.test_transform = test_transform
 
         clear_dataset_train = _CLEARImage(
-                    root="../datasets/clear100",
+                    root=self.root,
                     data_name="clear100",
-                    download=True,
+                    download=kwargs.get("download", True),
                     split="train",
                     seed=0,
                     transform=self.train_transform,
                 )
         
         clear_dataset_test = _CLEARImage(
-                    root="../datasets/clear100",
+                    root=self.root,
                     data_name="clear100",
-                    download=True,
+                    download=kwargs.get("download", True),
                     split="test",
                     seed=0,
                     transform=self.test_transform,
@@ -981,30 +855,36 @@ class ClearWorld(World):
         return stream_definitions
     
 
-
 def get_environment_from_name(env_name, args):
     """ Returns the environment class corresponding to the fiven name"""
     #todos: 
     # add possibility to do augmentations to all datasets 
 
     if env_name=="clear": 
-        env = ClearWorld()  # ClearWorld benchmark setup - it takes some minutes to load the dataset
+        args_dict = args.__dict__.copy()
+        env = ClearWorld(**args_dict)  # ClearWorld benchmark setup - it takes some minutes to load the dataset
     elif env_name=="permuted": 
-        env = PermutationWorld(permutation_size=args.permutation_size, number_tasks=args.number_tasks) 
-        env_name = f"{env_name}-{args.permutation_size}"
+        args_dict = args.__dict__.copy()
+        args_dict.pop('permutation_size', None)
+        args_dict.pop('number_tasks', None)
+        env = PermutationWorld(permutation_size=args.permutation_size, number_tasks=args.number_tasks, **args_dict) 
+        env_name = f"{env_name}-{args.dataset_to_permute}-{args.permutation_size}"
     elif env_name=="shuffled": 
-        env = LabelShufflingWorld(shuffle_fraction=args.shuffling_fraction, number_tasks=args.number_tasks) 
-        env_name = f"{env_name}-{args.shuffling_fraction}"
+        args_dict = args.__dict__.copy()
+        args_dict.pop('shuffle_fraction', None)
+        args_dict.pop('number_tasks', None)
+        env = LabelShufflingWorld(shuffle_fraction=args.shuffle_fraction, number_tasks=args.number_tasks, **args_dict) 
+        env_name = f"{env_name}-{args.dataset_to_shuffle}-{args.shuffle_fraction}"
     elif env_name=="multidataset": 
-        env = MultiDatasetsWorld(num_classes=10, augment=True) 
-    elif env_name=="mixedpermuted": 
-        env = MixedPermutationWorld(number_tasks=args.number_tasks, num_switches=5) 
+        args_dict = args.__dict__.copy()
+        args_dict.pop('num_classes', None)
+        env = MultiDatasetsWorld(num_classes=10, augment=True, **args_dict) 
     elif "split" in env_name: 
         args_dict = args.__dict__.copy()
         args_dict.pop('split_type', None)
         args_dict.pop('number_tasks', None)
         env = SplitWorld(split_type=args.split_type, number_tasks=args.number_tasks, randomize_class_order=False, **args_dict) #follow a sequential order
-        env_name = f"split-{env.dataset_to_split}-{args.split_type}-{args.number_tasks}"
+        env_name = f"split-{env.dataset_name}-{args.split_type}-{args.number_tasks}"
     elif "2d_classification" in env_name: 
         env = ContinualLogisticWorld(npz_file=args.npz_file, split_ratio=args.train_ratio, root=args.root)
         env_name = f"2d_classification-{env.dataset_name}"
